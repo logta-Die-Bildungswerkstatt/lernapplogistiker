@@ -1,0 +1,38 @@
+{
+  "name": "LernApp Logistiker",
+  "short_name": "LernApp Logistiker",
+  "description": "Lernapp zur Prüfungsvorbereitung für Fachkraft für Lagerlogistik / Fachlagerist",
+  "start_url": "/lernapplogistiker/index.html",
+  "scope": "/lernapplogistiker/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#1B3F8B",
+  "lang": "de",
+  "icons": [
+    {
+      "src": "/lernapplogistiker/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/lernapplogistiker/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/lernapplogistiker/icons/icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/lernapplogistiker/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
