@@ -20327,6 +20327,7 @@ function isFullLicense() {
 // wie in einer klassischen WebView-App. Play Billing läuft hier stattdessen über die
 // Digital Goods API (window.getDigitalGoodsService), bereitgestellt von androidbrowserhelper:billing.
 let _digitalGoodsService = null; // Cache, damit nicht mehrfach angefragt werden muss
+let _iapPurchaseInProgress = false; // Schutz gegen Doppel-Tap / doppelten Kaufversuch, während einer schon läuft
 
 async function getDigitalGoodsServiceCached() {
   if (_digitalGoodsService) return _digitalGoodsService;
@@ -20346,6 +20347,50 @@ async function iapPlatformAsync() {
   const service = await getDigitalGoodsServiceCached();
   if (service) return 'android';
   return null;
+}
+
+// Bestätigt (acknowledge) einen Kauf robust mit mehreren Versuchen. Google Play
+// VERLANGT diese Bestätigung innerhalb von 3 Tagen nach dem Kauf — passiert das
+// nicht (z.B. wegen eines kurzen Netzwerkaussetzers direkt nach dem Kauf), storniert
+// Google den Kauf automatisch und erstattet ihn, ohne dass App oder Kunde etwas davon
+// merken. Der Kunde müsste dann erneut bezahlen. Ein einzelner Fehlversuch darf das
+// daher nie einfach verschlucken.
+async function iapAcknowledgeWithRetry(service, purchaseToken, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await service.acknowledge(purchaseToken, 'onetime');
+      return true;
+    } catch (e) {
+      if (i < attempts - 1) {
+        await new Promise(r => setTimeout(r, 800 * (i + 1)));
+      }
+    }
+  }
+  return false;
+}
+
+// Fragt DIREKT bei Google Play nach, ob der Kauf schon existiert — die einzige
+// verlässliche Quelle der Wahrheit ist der Play Store, NICHT der lokale
+// Browser-/App-Speicher (der kann durch Neuinstallation, "App-Daten löschen",
+// Geräte-/Account-Wechsel etc. verloren gehen, obwohl der Kauf bei Google
+// weiterhin existiert). Wird sowohl automatisch beim App-Start als auch VOR jedem
+// neuen Kaufversuch aufgerufen, damit niemand ein zweites Mal bezahlen kann, obwohl
+// der Kauf längst vorliegt.
+async function iapCheckOwnedOnAndroid() {
+  const service = await getDigitalGoodsServiceCached();
+  if (!service) return false;
+  try {
+    const purchases = await service.listPurchases();
+    const existing = purchases.find(p => p.itemId === IAP_PRODUCT_ID);
+    if (!existing) return false;
+    // Egal ob schon bestätigt oder nicht: sicherstellen, dass acknowledge durch ist,
+    // sonst storniert Google den Kauf nach spätestens 3 Tagen automatisch.
+    await iapAcknowledgeWithRetry(service, existing.purchaseToken);
+    try { localStorage.setItem(LICENSE_KEY, IAP_LICENSE_VALUE); } catch(e) {}
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 // ===== iOS & ANDROID IAP FUNKTIONEN =====
@@ -20370,47 +20415,71 @@ function iapSuccess() {
 }
 
 async function iapPurchase() {
-  const platform = await iapPlatformAsync();
-  if (platform === 'ios') {
-    iapSetLoading(true);
-    window.webkit.messageHandlers.iapPurchase.postMessage({ productId: IAP_PRODUCT_ID });
-  } else if (platform === 'android') {
-    iapSetLoading(true);
-    try {
-      const service = await getDigitalGoodsServiceCached();
-      // Preis/Details vom Play-Store-Produkt abrufen (muss vorher in der Play Console angelegt sein)
-      const detailsList = await service.getDetails([IAP_PRODUCT_ID]);
-      if (!detailsList || detailsList.length === 0) {
-        iapShowError('Produkt nicht gefunden. Bitte später erneut versuchen.');
+  // Schutz gegen Doppel-Tap: Falls schon ein Kaufvorgang läuft, zweiten Aufruf ignorieren.
+  if (_iapPurchaseInProgress) return;
+  _iapPurchaseInProgress = true;
+  try {
+    const platform = await iapPlatformAsync();
+    if (platform === 'ios') {
+      iapSetLoading(true);
+      window.webkit.messageHandlers.iapPurchase.postMessage({ productId: IAP_PRODUCT_ID });
+    } else if (platform === 'android') {
+      iapSetLoading(true);
+      // WICHTIG: Erst bei Google selbst nachfragen, ob der Kauf nicht schon existiert
+      // (z.B. nach Neuinstallation, gelöschtem App-/Browser-Speicher oder Gerätewechsel
+      // mit demselben Google-Konto). Verhindert, dass jemand ein zweites Mal bezahlt.
+      const alreadyOwned = await iapCheckOwnedOnAndroid();
+      if (alreadyOwned) {
+        iapSuccess();
         return;
       }
-      const itemDetails = detailsList[0];
-      const paymentMethodData = [{
-        supportedMethods: 'https://play.google.com/billing',
-        data: { sku: IAP_PRODUCT_ID }
-      }];
-      const paymentDetails = {
-        total: {
-          label: itemDetails.title || 'Vollversion',
-          amount: { currency: itemDetails.price.currency, value: itemDetails.price.value }
+      try {
+        const service = await getDigitalGoodsServiceCached();
+        // Preis/Details vom Play-Store-Produkt abrufen (muss vorher in der Play Console angelegt sein)
+        const detailsList = await service.getDetails([IAP_PRODUCT_ID]);
+        if (!detailsList || detailsList.length === 0) {
+          iapShowError('Produkt nicht gefunden. Bitte später erneut versuchen.');
+          return;
         }
-      };
-      const request = new PaymentRequest(paymentMethodData, paymentDetails);
-      const paymentResponse = await request.show();
-      const { purchaseToken } = paymentResponse.details;
-      // Kauf lokal bestätigen (kein eigener Server vorhanden -> Consumption/Acknowledge direkt im Client)
-      await paymentResponse.complete('success');
-      await service.acknowledge(purchaseToken, 'onetime');
-      iapSuccess();
-    } catch (e) {
-      // Wird u.a. ausgelöst, wenn der Nutzer den Kaufdialog abbricht
-      iapSetLoading(false);
-      if (e && e.name !== 'AbortError') {
-        iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.');
+        const itemDetails = detailsList[0];
+        const paymentMethodData = [{
+          supportedMethods: 'https://play.google.com/billing',
+          data: { sku: IAP_PRODUCT_ID }
+        }];
+        const paymentDetails = {
+          total: {
+            label: itemDetails.title || 'Vollversion',
+            amount: { currency: itemDetails.price.currency, value: itemDetails.price.value }
+          }
+        };
+        const request = new PaymentRequest(paymentMethodData, paymentDetails);
+        const paymentResponse = await request.show();
+        const { purchaseToken } = paymentResponse.details;
+        // Kauf lokal bestätigen (kein eigener Server vorhanden -> Consumption/Acknowledge direkt im Client)
+        await paymentResponse.complete('success');
+        // Bestätigung MUSS durchgehen (mit Wiederholungsversuchen), sonst storniert Google
+        // Play den Kauf nach spätestens 3 Tagen automatisch — das war vermutlich die
+        // Ursache für den "doppelten Kauf" bei der Meister-App.
+        const acked = await iapAcknowledgeWithRetry(service, purchaseToken);
+        if (!acked) {
+          // Der Kunde HAT bezahlt, also trotzdem freischalten. Der automatische
+          // Ownership-Check beim nächsten App-Start (siehe DOMContentLoaded weiter unten)
+          // holt das fehlende acknowledge zuverlässig nach.
+          console.warn('IAP: acknowledge nach mehreren Versuchen fehlgeschlagen — wird beim nächsten App-Start automatisch nachgeholt.');
+        }
+        iapSuccess();
+      } catch (e) {
+        // Wird u.a. ausgelöst, wenn der Nutzer den Kaufdialog abbricht
+        iapSetLoading(false);
+        if (e && e.name !== 'AbortError') {
+          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.');
+        }
       }
+    } else {
+      iapShowError('In-App-Kauf ist nur in der iOS- oder Android-App verfügbar.');
     }
-  } else {
-    iapShowError('In-App-Kauf ist nur in der iOS- oder Android-App verfügbar.');
+  } finally {
+    _iapPurchaseInProgress = false;
   }
 }
 
@@ -20422,12 +20491,8 @@ async function iapRestore() {
   } else if (platform === 'android') {
     iapSetLoading(true);
     try {
-      const service = await getDigitalGoodsServiceCached();
-      const purchases = await service.listPurchases();
-      const existing = purchases.find(p => p.itemId === IAP_PRODUCT_ID);
-      if (existing) {
-        // Falls aus irgendeinem Grund noch nicht bestätigt (z.B. Kauf auf anderem Gerät), erneut acknowledgen
-        try { await service.acknowledge(existing.purchaseToken, 'onetime'); } catch (e) {}
+      const owned = await iapCheckOwnedOnAndroid();
+      if (owned) {
         onIAPRestoreSuccess();
       } else {
         onIAPRestoreEmpty();
@@ -21191,7 +21256,7 @@ window.addEventListener('DOMContentLoaded', function() {
   const licScreen = document.getElementById('license-screen');
 
   if (isFullLicense()) {
-    // Vollversion freigeschaltet → License-Screen bleibt versteckt
+    // Vollversion laut lokalem Speicher freigeschaltet → License-Screen bleibt versteckt
     if (licScreen) licScreen.style.display = 'none';
     window.FREE_MODE = false;
     updateBanner();
@@ -21200,8 +21265,30 @@ window.addEventListener('DOMContentLoaded', function() {
       setTimeout(()=>showOnboarding(1), 600);
     }
   } else {
-    // Nicht freigeschaltet → License-Screen zeigen (überdeckt die App per position:fixed)
+    // Lokal nicht als gekauft bekannt → erstmal License-Screen zeigen
     if (licScreen) licScreen.style.display = 'flex';
+    // ZUSÄTZLICH automatisch bei Google Play nachfragen (nur Android/TWA), OHNE dass
+    // der Kunde manuell "Kauf wiederherstellen" antippen muss. Das schließt die Lücke,
+    // die vermutlich das alte Problem bei der Meister-App verursacht hat: Der lokale
+    // Speicher kann z.B. durch App-Neuinstallation, "App-Daten löschen" oder Gerätewechsel
+    // verloren gehen, obwohl der Kauf bei Google weiterhin existiert. Läuft im Hintergrund,
+    // ohne den Ladebildschirm zu blockieren.
+    iapCheckOwnedOnAndroid().then(function(owned) {
+      if (owned) {
+        if (licScreen) {
+          licScreen.style.opacity = '0';
+          setTimeout(() => { licScreen.style.display = 'none'; }, 400);
+        }
+        const backBtn = document.getElementById('license-back-btn');
+        if (backBtn) backBtn.style.display = 'none';
+        window.FREE_MODE = false;
+        updateFreischaltenBtn();
+        if (typeof updateBanner === 'function') updateBanner();
+        if (!localStorage.getItem('logta-username')) {
+          setTimeout(()=>showOnboarding(1), 600);
+        }
+      }
+    });
   }
 });
 </script>
