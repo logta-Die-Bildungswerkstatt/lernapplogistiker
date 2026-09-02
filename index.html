@@ -20472,7 +20472,9 @@ async function iapPurchase() {
         // Wird u.a. ausgelöst, wenn der Nutzer den Kaufdialog abbricht
         iapSetLoading(false);
         if (e && e.name !== 'AbortError') {
-          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.');
+          // Echte Fehlerursache mit anzeigen, damit man das Problem eingrenzen kann
+          var detail = (e && (e.message || e.name)) ? ' (' + (e.message || e.name) + ')' : '';
+          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.' + detail);
         }
       }
     } else {
@@ -20499,7 +20501,7 @@ async function iapRestore() {
       }
     } catch (e) {
       iapSetLoading(false);
-      iapShowError('Kauf wiederherstellen fehlgeschlagen. Bitte versuche es erneut.');
+      iapShowError('Kauf wiederherstellen fehlgeschlagen. Bitte versuche es erneut.' + ((e && e.message) ? ' (' + e.message + ')' : ''));
     }
   } else {
     iapShowError('Kauf wiederherstellen ist nur in der iOS- oder Android-App möglich.');
