@@ -20372,13 +20372,20 @@ async function iapPlatformAsync() {
   return null;
 }
 
-// Bestätigt (acknowledge) einen Kauf robust mit mehreren Versuchen. Google Play
-// VERLANGT diese Bestätigung innerhalb von 3 Tagen nach dem Kauf — passiert das
-// nicht (z.B. wegen eines kurzen Netzwerkaussetzers direkt nach dem Kauf), storniert
-// Google den Kauf automatisch und erstattet ihn, ohne dass App oder Kunde etwas davon
-// merken. Der Kunde müsste dann erneut bezahlen. Ein einzelner Fehlversuch darf das
-// daher nie einfach verschlucken.
+// Bestätigt (acknowledge) einen Kauf, sofern der Browser das noch anbietet.
+// WICHTIG (geaendert 02.09.2026, Abend):
+// service.acknowledge() stammt aus Version 1.0 der Digital Goods API. Chrome liefert
+// seit Langem Version 2.0 aus, dort gibt es die Methode NICHT mehr - Play bestaetigt
+// einen Einmalkauf automatisch, sobald paymentResponse.complete('success') durch ist.
+// Der alte Code rief die Methode trotzdem auf, scheiterte drei Mal und wartete dabei
+// 2,4 Sekunden ins Leere. Jetzt wird zuerst geprueft, ob es sie ueberhaupt gibt.
+// Rueckgabe true bedeutet: nichts steht mehr offen (entweder bestaetigt oder von
+// Play automatisch erledigt).
 async function iapAcknowledgeWithRetry(service, purchaseToken, attempts = 3) {
+  if (!service || typeof service.acknowledge !== 'function') {
+    // Digital Goods API 2.0: Play hat bereits automatisch bestaetigt.
+    return true;
+  }
   for (let i = 0; i < attempts; i++) {
     try {
       await service.acknowledge(purchaseToken, 'onetime');
@@ -20484,7 +20491,7 @@ async function iapPurchase() {
         if (!service) {
           iapShowError('HAENGER in Schritt 1/4 (Verbindung). Grund: '
             + (_digitalGoodsError || 'unbekannt')
-            + ' [Version Markus 02.09.]');
+            + ' [Version 02.09. Abend]');
           return;
         }
         // Exakt wie in der funktionierenden Meister-App: KEIN getDetails() vorab.
@@ -20512,7 +20519,7 @@ async function iapPurchase() {
           if (!details || details.length === 0) {
             iapShowError('PRODUKT NICHT GEFUNDEN. Google liefert zu "' + IAP_PRODUCT_ID
               + '" nichts zurueck. Das Produkt ist bei Google noch nicht ausgeliefert '
-              + 'oder die ID passt nicht. [Version Markus 02.09.]');
+              + 'oder die ID passt nicht. [Version 02.09. Abend]');
             return;
           }
           detailsInfo = details.map(function(d) {
@@ -20523,25 +20530,38 @@ async function iapPurchase() {
         } catch (dErr) {
           iapShowError('FEHLER bei Produktabfrage: '
             + ((dErr && (dErr.message || dErr.name)) || 'unbekannt')
-            + ' [Version Markus 02.09.]');
+            + ' [Version 02.09. Abend]');
           return;
         }
         const request = new PaymentRequest(paymentMethodData, paymentDetails);
         const paymentResponse = await request.show();
-        iapShowError('Schritt 4/4: Kauf bestaetigt. Wird abgeschlossen ...');
-        const { purchaseToken } = paymentResponse.details;
-        // Kauf lokal bestätigen (kein eigener Server vorhanden -> Consumption/Acknowledge direkt im Client)
-        await paymentResponse.complete('success');
-        // Bestätigung MUSS durchgehen (mit Wiederholungsversuchen), sonst storniert Google
-        // Play den Kauf nach spätestens 3 Tagen automatisch — das war vermutlich die
-        // Ursache für den "doppelten Kauf" bei der Meister-App.
-        const acked = await iapAcknowledgeWithRetry(service, purchaseToken);
-        if (!acked) {
-          // Der Kunde HAT bezahlt, also trotzdem freischalten. Der automatische
-          // Ownership-Check beim nächsten App-Start (siehe DOMContentLoaded weiter unten)
-          // holt das fehlende acknowledge zuverlässig nach.
-          console.warn('IAP: acknowledge nach mehreren Versuchen fehlgeschlagen — wird beim nächsten App-Start automatisch nachgeholt.');
+        // ===== GEAENDERT 02.09.2026, Abend =====
+        // AB HIER IST BEZAHLT WORDEN. Ab diesem Punkt darf NICHTS mehr dazu fuehren,
+        // dass die App im Kaufscreen stehen bleibt. Frueher lief alles Folgende im
+        // grossen try-Block: ein Fehler beim Abschliessen, beim Auslesen des Tokens
+        // oder beim Bestaetigen landete im catch und zeigte "Kauf konnte nicht
+        // abgeschlossen werden" - obwohl der Kunde bezahlt hatte.
+        // Jetzt wird jeder Teilschritt einzeln abgesichert und protokolliert, und
+        // freigeschaltet wird in JEDEM Fall.
+        let schritt = 'nach Bezahlung';
+        try {
+          schritt = '4a: Kauf abschliessen (complete)';
+          iapShowError('Schritt 4/4: Bezahlt. Kauf wird abgeschlossen ...');
+          await paymentResponse.complete('success');
+
+          schritt = '4b: Kaufbeleg auslesen';
+          const purchaseToken = paymentResponse.details && paymentResponse.details.purchaseToken;
+
+          schritt = '4c: Kauf bei Google bestaetigen';
+          if (purchaseToken) {
+            await iapAcknowledgeWithRetry(service, purchaseToken);
+          }
+        } catch (finErr) {
+          // Nur protokollieren, NIEMALS die Freischaltung verhindern.
+          console.warn('IAP: Problem bei "' + schritt + '": '
+            + ((finErr && (finErr.message || finErr.name)) || 'unbekannt'));
         }
+        // Bezahlt ist bezahlt: freischalten.
         iapSuccess();
       } catch (e) {
         // Wird u.a. ausgelöst, wenn der Nutzer den Kaufdialog abbricht
@@ -20561,13 +20581,13 @@ async function iapPurchase() {
         if (e && e.name !== 'AbortError') {
           // Echte Fehlerursache mit anzeigen, damit man das Problem eingrenzen kann
           var detail = (e && (e.message || e.name)) ? ' (' + (e.message || e.name) + ')' : '';
-          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.' + detail + ' [Version Markus 02.09.]');
+          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.' + detail + ' [Version 02.09. Abend]');
         }
       }
     } else {
       // Weder Apple-Bridge noch Google-Digital-Goods-API vorhanden:
       // Die Seite laeuft im normalen Browser, nicht in der installierten App.
-      iapShowError('Kein Kauf möglich: Die App läuft gerade im Browser, nicht als installierte App. Bitte die App aus dem App Store (Apple) bzw. Google Play (Android) öffnen. [Version Markus 02.09.]');
+      iapShowError('Kein Kauf möglich: Die App läuft gerade im Browser, nicht als installierte App. Bitte die App aus dem App Store (Apple) bzw. Google Play (Android) öffnen. [Version 02.09. Abend]');
     }
   } finally {
     _iapPurchaseInProgress = false;
