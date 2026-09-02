@@ -20496,10 +20496,39 @@ async function iapPurchase() {
         const paymentDetails = {
           total: { label: 'Vollversion', amount: { currency: 'EUR', value: '0' } }
         };
+        iapShowError('Schritt 2/4: Verbindung steht. Frage Produkt bei Google ab ...');
+        // ===== DIAGNOSE 02.09.2026 =====
+        // Fragt Google direkt, was es zu dieser Produkt-ID kennt. Liefert Google ein
+        // leeres Ergebnis, wird das Produkt (noch) nicht ausgeliefert - dann kann sich
+        // der Kaufdialog gar nicht oeffnen, egal wie korrekt alles andere ist.
+        // Das unterscheidet endgueltig zwischen "Produkt kommt nicht an" und
+        // "Produkt ist da, aber show() geht nicht auf".
+        let detailsInfo = '';
+        try {
+          const details = await Promise.race([
+            service.getDetails([IAP_PRODUCT_ID]),
+            new Promise(function(_, rej) { setTimeout(function(){ rej(new Error('TIMEOUT 8s')); }, 8000); })
+          ]);
+          if (!details || details.length === 0) {
+            iapShowError('PRODUKT NICHT GEFUNDEN. Google liefert zu "' + IAP_PRODUCT_ID
+              + '" nichts zurueck. Das Produkt ist bei Google noch nicht ausgeliefert '
+              + 'oder die ID passt nicht. [Version Markus 02.09.]');
+            return;
+          }
+          detailsInfo = details.map(function(d) {
+            return (d.itemId || '?') + ' | ' + (d.title || 'ohne Titel') + ' | '
+              + ((d.price && d.price.value) ? d.price.value + ' ' + d.price.currency : 'kein Preis');
+          }).join(' /// ');
+          iapShowError('Schritt 3/4: Produkt gefunden -> ' + detailsInfo + ' . Oeffne Kaufdialog ...');
+        } catch (dErr) {
+          iapShowError('FEHLER bei Produktabfrage: '
+            + ((dErr && (dErr.message || dErr.name)) || 'unbekannt')
+            + ' [Version Markus 02.09.]');
+          return;
+        }
         const request = new PaymentRequest(paymentMethodData, paymentDetails);
-        iapShowError('Schritt 2/4: Verbindung steht. Kaufdialog wird geoeffnet ...');
         const paymentResponse = await request.show();
-        iapShowError('Schritt 3/4: Kauf bestaetigt. Wird abgeschlossen ...');
+        iapShowError('Schritt 4/4: Kauf bestaetigt. Wird abgeschlossen ...');
         const { purchaseToken } = paymentResponse.details;
         // Kauf lokal bestätigen (kein eigener Server vorhanden -> Consumption/Acknowledge direkt im Client)
         await paymentResponse.complete('success');
