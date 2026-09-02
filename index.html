@@ -20449,14 +20449,24 @@ async function iapPurchase() {
       window.webkit.messageHandlers.iapPurchase.postMessage({ productId: IAP_PRODUCT_ID });
     } else if (isAndroid) {
       iapSetLoading(true);
-      // WICHTIG: Erst bei Google selbst nachfragen, ob der Kauf nicht schon existiert
-      // (z.B. nach Neuinstallation, gelöschtem App-/Browser-Speicher oder Gerätewechsel
-      // mit demselben Google-Konto). Verhindert, dass jemand ein zweites Mal bezahlt.
-      const alreadyOwned = await iapCheckOwnedOnAndroid();
-      if (alreadyOwned) {
-        iapSuccess();
-        return;
-      }
+      // ===== GEAENDERT 02.09.2026 – Reihenfolge wie in der funktionierenden Meister-App =====
+      // Frueher stand hier ZUERST eine komplette Netzwerkabfrage zu Google
+      // (iapCheckOwnedOnAndroid -> listPurchases). Erst danach kam PaymentRequest.show().
+      //
+      // Problem: PaymentRequest.show() darf nur aufgerufen werden, solange noch eine
+      // frische Nutzerinteraktion vorliegt ("transient user activation"). Der Fingertipp
+      // erzeugt sie, sie laeuft aber nach kurzer Zeit ab. Die vorgeschaltete Runde zu
+      // Google verbraucht diese Zeit. Symptom: kurz "Verbinde ...", dann passiert nichts
+      // mehr - der Kaufdialog wird nie geoeffnet.
+      //
+      // Die Meister-App macht genau EIN await (getDigitalGoodsService) und ruft dann
+      // sofort show() auf. Diese Reihenfolge wird hier uebernommen.
+      //
+      // Der Schutz gegen Doppelkauf geht dabei NICHT verloren: Er laeuft weiterhin
+      // automatisch beim App-Start (siehe iapCheckOwnedOnAndroid weiter unten im
+      // DOMContentLoaded-Block) und ueber den Button "Kauf wiederherstellen".
+      // Zusaetzlich meldet Google beim Kaufversuch selbst, wenn der Artikel bereits
+      // gekauft wurde - das wird unten im catch-Block abgefangen.
       try {
         const service = await getDigitalGoodsServiceCached();
         if (!service) {
@@ -20493,6 +20503,18 @@ async function iapPurchase() {
       } catch (e) {
         // Wird u.a. ausgelöst, wenn der Nutzer den Kaufdialog abbricht
         iapSetLoading(false);
+        // ===== ERGAENZT 02.09.2026 =====
+        // Ersatz fuer die entfernte Vorab-Pruefung: Meldet Google, dass der Artikel
+        // bereits gekauft wurde ("already owned"), wird hier direkt freigeschaltet
+        // statt eine Fehlermeldung zu zeigen. So kann niemand doppelt bezahlen.
+        var msgLower = (e && e.message ? String(e.message) : '').toLowerCase();
+        if (msgLower.indexOf('already owned') !== -1 || msgLower.indexOf('item_already_owned') !== -1) {
+          iapCheckOwnedOnAndroid().then(function(owned) {
+            if (owned) { iapSuccess(); }
+            else { iapShowError('Dieser Kauf liegt bereits vor. Bitte auf "Kauf wiederherstellen" tippen.'); }
+          });
+          return;
+        }
         if (e && e.name !== 'AbortError') {
           // Echte Fehlerursache mit anzeigen, damit man das Problem eingrenzen kann
           var detail = (e && (e.message || e.name)) ? ' (' + (e.message || e.name) + ')' : '';
