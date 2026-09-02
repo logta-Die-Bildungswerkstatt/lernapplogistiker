@@ -20327,16 +20327,31 @@ function isFullLicense() {
 // wie in einer klassischen WebView-App. Play Billing läuft hier stattdessen über die
 // Digital Goods API (window.getDigitalGoodsService), bereitgestellt von androidbrowserhelper:billing.
 let _digitalGoodsService = null; // Cache, damit nicht mehrfach angefragt werden muss
+let _digitalGoodsError = '';     // letzter Fehlergrund, damit er in der Meldung angezeigt werden kann
 let _iapPurchaseInProgress = false; // Schutz gegen Doppel-Tap / doppelten Kaufversuch, während einer schon läuft
 
 async function getDigitalGoodsServiceCached() {
   if (_digitalGoodsService) return _digitalGoodsService;
-  if (!('getDigitalGoodsService' in window)) return null;
+  if (!('getDigitalGoodsService' in window)) {
+    _digitalGoodsError = 'API nicht vorhanden (kein TWA-Kontext)';
+    return null;
+  }
   try {
-    _digitalGoodsService = await window.getDigitalGoodsService('https://play.google.com/billing');
+    const svc = await window.getDigitalGoodsService('https://play.google.com/billing');
+    if (!svc) {
+      _digitalGoodsError = 'Dienst leer zurueckgegeben';
+      return null;
+    }
+    _digitalGoodsService = svc;
+    _digitalGoodsError = '';
     return _digitalGoodsService;
   } catch (e) {
-    return null; // z.B. App nicht über Play Store installiert / kein TWA-Kontext
+    // Grund NICHT verschlucken: haeufigste Ursachen sind
+    // - App nicht ueber den Play Store installiert (lokal gebaute APK/AAB)
+    // - Digital Asset Links nicht verifiziert -> Custom-Tabs-Fallback
+    // - Play-Store-App auf dem Geraet veraltet
+    _digitalGoodsError = (e && (e.message || e.name)) ? (e.message || e.name) : 'unbekannt';
+    return null;
   }
 }
 
@@ -20445,7 +20460,9 @@ async function iapPurchase() {
       try {
         const service = await getDigitalGoodsServiceCached();
         if (!service) {
-          iapShowError('Google Play Billing ist auf diesem Gerät nicht verfügbar. [Version Markus 02.09.]');
+          iapShowError('Google Play Billing ist auf diesem Gerät nicht verfügbar. Grund: '
+            + (_digitalGoodsError || 'unbekannt')
+            + ' [Version Markus 02.09.]');
           return;
         }
         // Exakt wie in der funktionierenden Meister-App: KEIN getDetails() vorab.
