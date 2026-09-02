@@ -20337,7 +20337,19 @@ async function getDigitalGoodsServiceCached() {
     return null;
   }
   try {
-    const svc = await window.getDigitalGoodsService('https://play.google.com/billing');
+    // ===== ERGAENZT 02.09.2026: Zeitbegrenzung =====
+    // Symptom war: kurz "Verbinde ...", danach passiert gar nichts mehr und es
+    // erscheint KEINE Fehlermeldung. Das bedeutet, dass dieser Aufruf weder
+    // zurueckkehrt noch abbricht - er haengt. Ohne Zeitbegrenzung wartet der Code
+    // dann endlos und der Nutzer sieht nur die Sanduhr.
+    // Mit dem Timeout bricht der Aufruf nach 5 Sekunden ab und die Meldung sagt,
+    // an welcher Stelle es haengt.
+    const svc = await Promise.race([
+      window.getDigitalGoodsService('https://play.google.com/billing'),
+      new Promise(function(_, reject) {
+        setTimeout(function() { reject(new Error('TIMEOUT nach 5s bei getDigitalGoodsService')); }, 5000);
+      })
+    ]);
     if (!svc) {
       _digitalGoodsError = 'Dienst leer zurueckgegeben';
       return null;
@@ -20346,10 +20358,6 @@ async function getDigitalGoodsServiceCached() {
     _digitalGoodsError = '';
     return _digitalGoodsService;
   } catch (e) {
-    // Grund NICHT verschlucken: haeufigste Ursachen sind
-    // - App nicht ueber den Play Store installiert (lokal gebaute APK/AAB)
-    // - Digital Asset Links nicht verifiziert -> Custom-Tabs-Fallback
-    // - Play-Store-App auf dem Geraet veraltet
     _digitalGoodsError = (e && (e.message || e.name)) ? (e.message || e.name) : 'unbekannt';
     return null;
   }
@@ -20468,9 +20476,13 @@ async function iapPurchase() {
       // Zusaetzlich meldet Google beim Kaufversuch selbst, wenn der Artikel bereits
       // gekauft wurde - das wird unten im catch-Block abgefangen.
       try {
+        // ===== DIAGNOSE 02.09.2026 =====
+        // Zeigt live an, wie weit der Kaufablauf kommt. Bleibt die Anzeige auf einem
+        // Schritt stehen, ist genau dort der Haenger.
+        iapShowError('Schritt 1/4: Verbindung zu Google Play wird aufgebaut ...');
         const service = await getDigitalGoodsServiceCached();
         if (!service) {
-          iapShowError('Google Play Billing ist auf diesem Gerät nicht verfügbar. Grund: '
+          iapShowError('HAENGER in Schritt 1/4 (Verbindung). Grund: '
             + (_digitalGoodsError || 'unbekannt')
             + ' [Version Markus 02.09.]');
           return;
@@ -20485,7 +20497,9 @@ async function iapPurchase() {
           total: { label: 'Vollversion', amount: { currency: 'EUR', value: '0' } }
         };
         const request = new PaymentRequest(paymentMethodData, paymentDetails);
+        iapShowError('Schritt 2/4: Verbindung steht. Kaufdialog wird geoeffnet ...');
         const paymentResponse = await request.show();
+        iapShowError('Schritt 3/4: Kauf bestaetigt. Wird abgeschlossen ...');
         const { purchaseToken } = paymentResponse.details;
         // Kauf lokal bestätigen (kein eigener Server vorhanden -> Consumption/Acknowledge direkt im Client)
         await paymentResponse.complete('success');
