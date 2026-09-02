@@ -20419,11 +20419,20 @@ async function iapPurchase() {
   if (_iapPurchaseInProgress) return;
   _iapPurchaseInProgress = true;
   try {
-    const platform = await iapPlatformAsync();
-    if (platform === 'ios') {
+    // WEICHE wie in der funktionierenden Meister-App:
+    // 1) Apple/iOS  -> window.webkit.messageHandlers.iapPurchase
+    // 2) Google/Android (TWA) -> reine Existenzpruefung 'getDigitalGoodsService' in window
+    // Es wird hier BEWUSST nicht mehr auf getDigitalGoodsService(...) gewartet.
+    // Frueher wurde dieser Aufruf hier abgewartet; schlug er fehl, landete der Code
+    // faelschlich im Browser-Zweig und meldete "nur in der iOS- oder Android-App".
+    // Jetzt gilt: Gibt es die Funktion, ist es Android und der Android-Zweig laeuft,
+    // der dann eine aussagekraeftige Fehlerursache anzeigt.
+    const isIOS = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.iapPurchase);
+    const isAndroid = ('getDigitalGoodsService' in window);
+    if (isIOS) {
       iapSetLoading(true);
       window.webkit.messageHandlers.iapPurchase.postMessage({ productId: IAP_PRODUCT_ID });
-    } else if (platform === 'android') {
+    } else if (isAndroid) {
       iapSetLoading(true);
       // WICHTIG: Erst bei Google selbst nachfragen, ob der Kauf nicht schon existiert
       // (z.B. nach Neuinstallation, gelöschtem App-/Browser-Speicher oder Gerätewechsel
@@ -20474,7 +20483,9 @@ async function iapPurchase() {
         }
       }
     } else {
-      iapShowError('In-App-Kauf ist nur in der iOS- oder Android-App verfügbar. [Version Markus 02.09.]');
+      // Weder Apple-Bridge noch Google-Digital-Goods-API vorhanden:
+      // Die Seite laeuft im normalen Browser, nicht in der installierten App.
+      iapShowError('Kein Kauf möglich: Die App läuft gerade im Browser, nicht als installierte App. Bitte die App aus dem App Store (Apple) bzw. Google Play (Android) öffnen. [Version Markus 02.09.]');
     }
   } finally {
     _iapPurchaseInProgress = false;
@@ -20482,11 +20493,13 @@ async function iapPurchase() {
 }
 
 async function iapRestore() {
-  const platform = await iapPlatformAsync();
-  if (platform === 'ios') {
+  // Gleiche Weiche wie beim Kauf: Apple ueber webkit, Google ueber Digital Goods API.
+  const isIOS = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.iapRestore);
+  const isAndroid = ('getDigitalGoodsService' in window);
+  if (isIOS) {
     iapSetLoading(true);
     window.webkit.messageHandlers.iapRestore.postMessage({});
-  } else if (platform === 'android') {
+  } else if (isAndroid) {
     iapSetLoading(true);
     try {
       const owned = await iapCheckOwnedOnAndroid();
@@ -20500,7 +20513,7 @@ async function iapRestore() {
       iapShowError('Kauf wiederherstellen fehlgeschlagen. Bitte versuche es erneut.' + ((e && e.message) ? ' (' + e.message + ')' : ''));
     }
   } else {
-    iapShowError('Kauf wiederherstellen ist nur in der iOS- oder Android-App möglich.');
+    iapShowError('Wiederherstellen nicht möglich: Die App läuft gerade im Browser, nicht als installierte App. Bitte die App aus dem App Store (Apple) bzw. Google Play (Android) öffnen.');
   }
 }
 
