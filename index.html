@@ -20435,22 +20435,18 @@ async function iapPurchase() {
       }
       try {
         const service = await getDigitalGoodsServiceCached();
-        // Preis/Details vom Play-Store-Produkt abrufen (muss vorher in der Play Console angelegt sein)
-        const detailsList = await service.getDetails([IAP_PRODUCT_ID]);
-        if (!detailsList || detailsList.length === 0) {
-          iapShowError('Produkt nicht gefunden. Bitte später erneut versuchen.');
+        if (!service) {
+          iapShowError('Google Play Billing ist auf diesem Gerät nicht verfügbar. [Version Markus 02.09.]');
           return;
         }
-        const itemDetails = detailsList[0];
+        // Exakt wie in der funktionierenden Meister-App: KEIN getDetails() vorab.
+        // Der Preis wird von Google Play aus dem Produkt genommen, der Wert hier ist nur ein Platzhalter.
         const paymentMethodData = [{
           supportedMethods: 'https://play.google.com/billing',
           data: { sku: IAP_PRODUCT_ID }
         }];
         const paymentDetails = {
-          total: {
-            label: itemDetails.title || 'Vollversion',
-            amount: { currency: itemDetails.price.currency, value: itemDetails.price.value }
-          }
+          total: { label: 'Vollversion', amount: { currency: 'EUR', value: '0' } }
         };
         const request = new PaymentRequest(paymentMethodData, paymentDetails);
         const paymentResponse = await request.show();
@@ -20474,11 +20470,11 @@ async function iapPurchase() {
         if (e && e.name !== 'AbortError') {
           // Echte Fehlerursache mit anzeigen, damit man das Problem eingrenzen kann
           var detail = (e && (e.message || e.name)) ? ' (' + (e.message || e.name) + ')' : '';
-          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.' + detail);
+          iapShowError('Kauf konnte nicht abgeschlossen werden. Bitte versuche es erneut.' + detail + ' [Version Markus 02.09.]');
         }
       }
     } else {
-      iapShowError('In-App-Kauf ist nur in der iOS- oder Android-App verfügbar.');
+      iapShowError('In-App-Kauf ist nur in der iOS- oder Android-App verfügbar. [Version Markus 02.09.]');
     }
   } finally {
     _iapPurchaseInProgress = false;
