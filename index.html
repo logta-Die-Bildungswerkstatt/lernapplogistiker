@@ -20359,6 +20359,7 @@ async function getDigitalGoodsServiceCached() {
     return _digitalGoodsService;
   } catch (e) {
     _digitalGoodsError = (e && (e.message || e.name)) ? (e.message || e.name) : 'unbekannt';
+    try { iapLog('getDigitalGoodsService fehlgeschlagen', e); } catch (x) {}
     return null;
   }
 }
@@ -20431,10 +20432,131 @@ function iapSetLoading(show) {
   if (loading) loading.style.display = show ? 'block' : 'none';
 }
 
+// ===== DIAGNOSE-PROTOKOLL (eingebaut 02.09.2026, Abend) =====
+// Sammelt jeden Schritt und jeden Fehler im Klartext und zeigt alles direkt auf
+// dem Handy an - inklusive Fehlertyp, Herkunft und Zusatzangaben, die Chrome
+// mitliefert. Damit braucht man kein USB-Debugging, um die echte Ursache zu sehen.
+var _iapLog = [];
+
+function _iapT() {
+  var d = new Date();
+  function z(n, l) { n = String(n); while (n.length < (l || 2)) n = '0' + n; return n; }
+  return z(d.getHours()) + ':' + z(d.getMinutes()) + ':' + z(d.getSeconds())
+       + '.' + z(d.getMilliseconds(), 3);
+}
+
+// Zerlegt einen Fehler in ALLE verfuegbaren Bestandteile. Chrome packt die
+// eigentliche Ursache je nach Fehlerart in name, message, code oder cause.
+function _iapFehlerText(e) {
+  if (e === null) return 'null';
+  if (e === undefined) return 'undefined';
+  if (typeof e === 'string') return 'String: ' + e;
+  var teile = [];
+  try { if (e.name) teile.push('name=' + e.name); } catch (x) {}
+  try { if (e.message) teile.push('message=' + e.message); } catch (x) {}
+  try { if (e.code !== undefined) teile.push('code=' + e.code); } catch (x) {}
+  try { if (e.cause) teile.push('cause=' + String(e.cause)); } catch (x) {}
+  try {
+    var eigene = Object.getOwnPropertyNames(e).filter(function (k) {
+      return ['name', 'message', 'code', 'cause', 'stack'].indexOf(k) === -1;
+    });
+    eigene.forEach(function (k) {
+      try { teile.push(k + '=' + String(e[k])); } catch (x) {}
+    });
+  } catch (x) {}
+  try { if (!teile.length) teile.push('toString=' + String(e)); } catch (x) {}
+  try { teile.push('typ=' + Object.prototype.toString.call(e)); } catch (x) {}
+  return teile.join(' | ');
+}
+
+function iapLog(text, fehler) {
+  var zeile = _iapT() + '  ' + text;
+  if (arguments.length > 1) zeile += '\n        -> ' + _iapFehlerText(fehler);
+  _iapLog.push(zeile);
+  try { console.log('[IAP] ' + zeile); } catch (x) {}
+  _iapLogAnzeigen();
+}
+
+// Sammelt einmalig die Umgebungsdaten. Sie beantworten die Fragen, die sonst
+// immer wieder offenbleiben: laeuft es als TWA, ist Play Billing erreichbar,
+// welche Chrome-Version.
+function iapLogUmgebung() {
+  try {
+    iapLog('--- Umgebung ---');
+    iapLog('Adresse: ' + location.href);
+    iapLog('Digital Goods API vorhanden: ' + ('getDigitalGoodsService' in window));
+    iapLog('PaymentRequest vorhanden: ' + (typeof PaymentRequest !== 'undefined'));
+    iapLog('Als App gestartet (standalone): '
+      + (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+    iapLog('Produkt-ID im Code: ' + IAP_PRODUCT_ID);
+    var ua = navigator.userAgent || '';
+    var m = ua.match(/Chrome\/([\d.]+)/);
+    iapLog('Chrome-Version: ' + (m ? m[1] : 'nicht erkennbar'));
+    iapLog('Browserkennung: ' + ua);
+  } catch (e) {
+    iapLog('Umgebung konnte nicht vollstaendig gelesen werden', e);
+  }
+}
+
+function _iapLogAnzeigen() {
+  var box = document.getElementById('iap-diagnose');
+  if (!box) return;
+  var inhalt = document.getElementById('iap-diagnose-text');
+  if (inhalt) inhalt.textContent = _iapLog.join('\n');
+  box.style.display = 'block';
+}
+
+// Baut den Diagnosekasten samt Kopierknopf, sobald zum ersten Mal etwas passiert.
+function iapDiagnoseAufbauen() {
+  if (document.getElementById('iap-diagnose')) return;
+  var box = document.createElement('div');
+  box.id = 'iap-diagnose';
+  box.style.cssText = 'display:none;margin:16px 0;padding:12px;border:1px solid #888;'
+    + 'border-radius:8px;background:#111;color:#eee;font-size:12px;text-align:left;';
+  box.innerHTML =
+      '<div style="font-weight:bold;margin-bottom:8px;">Diagnose (Version 02.09. Abend)</div>'
+    + '<pre id="iap-diagnose-text" style="white-space:pre-wrap;word-break:break-word;'
+    + 'max-height:320px;overflow:auto;margin:0 0 10px 0;font-size:11px;line-height:1.45;"></pre>'
+    + '<button type="button" id="iap-diagnose-copy" style="padding:10px 14px;border:0;'
+    + 'border-radius:6px;background:#2563eb;color:#fff;font-size:13px;">Text kopieren</button>'
+    + '<span id="iap-diagnose-hinweis" style="margin-left:10px;"></span>';
+  var anker = document.getElementById('iap-error');
+  if (anker && anker.parentNode) anker.parentNode.insertBefore(box, anker.nextSibling);
+  else document.body.appendChild(box);
+
+  var btn = document.getElementById('iap-diagnose-copy');
+  if (btn) {
+    btn.addEventListener('click', function () {
+      var text = _iapLog.join('\n');
+      var hinweis = document.getElementById('iap-diagnose-hinweis');
+      function fertig(ok) {
+        if (hinweis) hinweis.textContent = ok ? 'Kopiert.' : 'Bitte von Hand markieren.';
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () { fertig(true); },
+                                                   function () { fertig(false); });
+          return;
+        }
+      } catch (x) {}
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        fertig(ok);
+      } catch (x) { fertig(false); }
+    });
+  }
+}
+
 function iapShowError(msg) {
   const el = document.getElementById('iap-error');
   if (el) { el.textContent = msg; el.style.display = 'block'; }
   iapSetLoading(false);
+  try { iapDiagnoseAufbauen(); iapLog('ANZEIGE: ' + msg); } catch (x) {}
 }
 
 // Wird vom nativen iOS-Layer aufgerufen nach erfolgreichem Kauf
@@ -20448,6 +20570,7 @@ async function iapPurchase() {
   // Schutz gegen Doppel-Tap: Falls schon ein Kaufvorgang läuft, zweiten Aufruf ignorieren.
   if (_iapPurchaseInProgress) return;
   _iapPurchaseInProgress = true;
+  try { iapDiagnoseAufbauen(); iapLog('=== Kaufbutton gedrueckt ==='); iapLogUmgebung(); } catch (x) {}
   try {
     // WEICHE wie in der funktionierenden Meister-App:
     // 1) Apple/iOS  -> window.webkit.messageHandlers.iapPurchase
@@ -20528,6 +20651,7 @@ async function iapPurchase() {
           }).join(' /// ');
           iapShowError('Schritt 3/4: Produkt gefunden -> ' + detailsInfo + ' . Oeffne Kaufdialog ...');
         } catch (dErr) {
+          try { iapLog('getDetails fehlgeschlagen fuer ' + IAP_PRODUCT_ID, dErr); } catch (x) {}
           iapShowError('FEHLER bei Produktabfrage: '
             + ((dErr && (dErr.message || dErr.name)) || 'unbekannt')
             + ' [Version 02.09. Abend]');
@@ -20565,6 +20689,7 @@ async function iapPurchase() {
         iapSuccess();
       } catch (e) {
         // Wird u.a. ausgelöst, wenn der Nutzer den Kaufdialog abbricht
+        try { iapLog('Fehler im Kaufablauf (PaymentRequest/show)', e); } catch (x) {}
         iapSetLoading(false);
         // ===== ERGAENZT 02.09.2026 =====
         // Ersatz fuer die entfernte Vorab-Pruefung: Meldet Google, dass der Artikel
